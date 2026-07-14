@@ -1,1 +1,90 @@
+pipeline {
+    agent any
 
+    environment {
+        DOCKERHUB_USERNAME = "alaai"
+        IMAGE_NAME = "nodejs-app1"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/Alaaibrahim2/nodejs-app1.git'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh """
+                    docker build -t ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG} .
+                """
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-cred',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+
+                    sh """
+                        echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
+                        docker push ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}
+                        docker logout
+                    """
+                }
+            }
+        }
+
+        stage('Update Manifest Repo') {
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: 'argocd',
+                    keyFileVariable: 'SSH_KEY'
+                )]) {
+
+                    sh """
+                        rm -rf nodejs-manifest
+
+                        mkdir -p ~/.ssh
+                        chmod 700 ~/.ssh
+
+                        ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+
+                        export GIT_SSH_COMMAND="ssh -i \$SSH_KEY -o StrictHostKeyChecking=no"
+
+                        git clone git@github.com:Alaaibrahim2/nodejs-manifest.git
+
+                        cd nodejs-manifest
+
+                        sed -i "s/IMAGE_TAG/${IMAGE_TAG}/g" login-app/values.yaml
+
+                        git config user.email "jenkins@gmail.com"
+                        git config user.name "Jenkins"
+
+                        git add login-app/values.yaml
+
+                        git commit -m "Update image tag ${IMAGE_TAG}" || true
+
+                        git push origin main
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline completed successfully."
+        }
+
+        failure {
+            echo "Pipeline failed."
+        }
+    }
+}
